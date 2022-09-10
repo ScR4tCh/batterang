@@ -1,0 +1,6 @@
+PyGObject
+pybluez2
+pydbus
+pyqt5
+# TODO; to be replaced if pull request to "official" pybluez2 is accepted and upstream
+git+https://github.com/ScR4tCh/pybluez2.git
