@@ -1,13 +1,14 @@
 import os
 import sys
+import time
 from traceback import print_exc
 
 import pydbus
-
-from PyQt5.QtWidgets import QWidget, QProgressBar, QFrame, QLabel, QListWidget, QListWidgetItem, QDesktopWidget, QHBoxLayout, QVBoxLayout, QApplication, QSystemTrayIcon, QMenu, QMainWindow, QAction, qApp
-from PyQt5.QtGui import QColor, QPalette, QCursor, QIcon, QWindow, QRegion, QPainterPath, QPainter, QPixmap
-from PyQt5.QtCore import Qt,QTimer,QSize, QRectF
-from PyQt5.QtCore import pyqtSlot, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QSize, QRectF, QThread, QRunnable, QThreadPool, QObject
+from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtGui import QColor, QPalette, QCursor, QIcon, QRegion, QPainterPath, QPainter, QPixmap
+from PyQt5.QtWidgets import QWidget, QProgressBar, QFrame, QLabel, QListWidget, QListWidgetItem, QDesktopWidget, \
+    QHBoxLayout, QVBoxLayout, QApplication, QSystemTrayIcon, QMenu, QMainWindow, QAction, qApp
 
 from bluetooth_battery import BatteryStateQuerier
 
@@ -15,11 +16,11 @@ from bluetooth_battery import BatteryStateQuerier
 def progressStyle(val):
     if val >= 80:
         col = "#1dbd00"
-    elif 60 < val < 80:
+    elif 50 < val < 80:
         col = "#9abd00"
-    elif 40 < val < 60:
+    elif 30 < val < 50:
         col = "#c1bd00"
-    elif 20 < val < 40:
+    elif 10 < val < 30:
         col = "#e69000"
     else:
         col = "#e63e00"
@@ -37,10 +38,10 @@ def progressStyle(val):
     return r
 
 
-class ListItem (QWidget):
+class ListItem(QWidget):
     icon_size = QSize(48, 48)
 
-    def __init__(self, name, addr, bat, icon, online=True, parent=None):
+    def __init__(self, name, addr, bat, icon, online=True, error=None, parent=None):
         super(ListItem, self).__init__(parent)
         self.lay = QHBoxLayout()
         self.rlay = QVBoxLayout()
@@ -52,8 +53,8 @@ class ListItem (QWidget):
         # self.icon.setFixedSize(self.icon_size)
         if icon:
             self.set_icon(icon)
-        
-        has_battery_info = True
+
+        has_battery_info = bat is not None
         if online:
             try:
                 self.lv = QProgressBar()
@@ -61,19 +62,25 @@ class ListItem (QWidget):
                 self.lv.setValue(v)
                 self.lv.setStyleSheet(progressStyle(v))
             except Exception as e:
-                print_exc()
+                # print_exc()
                 has_battery_info = False
 
         self.lay.addWidget(self.icon, 0)
         self.lay.addLayout(self.rlay, 1)
-        
+
         if online and has_battery_info:
             self.rlay.addWidget(self.lv)
         else:
             if not online:
                 self.setDisabled(True)
             else:
-                self.rlay.addWidget(QLabel('no battery status available'))
+                if error:
+                    lab = QLabel('no status: %s' % error)
+                    lab.textalignment = Qt.AlignLeft | Qt.TextWrapAnywhere
+                    self.rlay.addWidget(lab)
+                else:
+                    self.rlay.addWidget(QLabel('no battery status available'))
+
         self.setLayout(self.lay)
 
         self.addrLabel.setStyleSheet('''
@@ -92,7 +99,13 @@ class ListItem (QWidget):
 
 # better use QAbstractItemModel ? ... real MVC ?
 def listitemgen(dv):
-    ret = ListItem(dv.get('name'),dv.get('address'),dv.get('battery'), QIcon.fromTheme(dv.get('icon')))
+    ret = ListItem(
+        dv.get('name'),
+        dv.get('address'),
+        dv.get('battery'),
+        QIcon.fromTheme(dv.get('icon')),
+        error=dv.get('error')
+    )
 
     return ret
 
@@ -114,9 +127,9 @@ class FloatWin(QWidget):
         QWidget.__init__(self)
 
         self.remove_toolbar = True
-        self.setWindowFlags(Qt.Tool|Qt.FramelessWindowHint|Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
 
-        self.lay = QVBoxLayout(self) 
+        self.lay = QVBoxLayout(self)
 
         self.lab = QLabel()
         self.lab.setText("batterang")
@@ -125,7 +138,7 @@ class FloatWin(QWidget):
 
         self.list = QListWidget()
         pp = self.palette()
-        pp.setColor(QPalette.Base, pp.color(QPalette.Window))	
+        pp.setColor(QPalette.Base, pp.color(QPalette.Window))
         self.list.setPalette(pp)
         self.list.setBackgroundRole(QPalette.NoRole)
         self.list.setFrameStyle(QFrame.NoFrame)
@@ -155,10 +168,10 @@ class FloatWin(QWidget):
             item.setBackground(self.palette().color(QPalette.Window))
             i = listitemgen(m)
             item.setSizeHint(i.sizeHint())
-            
+
             self.list.addItem(item)
             self.list.setItemWidget(item, i)
-            
+
     def loc(self, geom):
         cp = QCursor.pos()
 
@@ -166,14 +179,17 @@ class FloatWin(QWidget):
         sg = QDesktopWidget().screenGeometry()
 
         w = self.geometry()
-        x = cp.x()-int(w.width()/2)
-        y = cp.y()-w.height()-geom.height()
+        x = cp.x() - int(w.width() / 2)
+        y = cp.y() - w.height() - geom.height()
 
         self.move(x, y)
 
     def focusOutEvent(self, e):
         self.hide()
 
+
+class UpdateSignal(QObject):
+    finished = pyqtSignal()
 
 class MainWindow(QMainWindow):
     devs = {}
@@ -187,11 +203,14 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         QMainWindow.__init__(self)
+
+        self.pool = QThreadPool()
+
         self.tray_icon = QSystemTrayIcon()
         self.floatwin = FloatWin()
 
         self.onlyconnected = True
-        
+
         self.tray_icon.activated.connect(self.showWid)
 
         quit_action = QAction("exit", self)
@@ -200,27 +219,27 @@ class MainWindow(QMainWindow):
         tray_menu = QMenu()
         tray_menu.addAction(quit_action)
         self.tray_icon.setContextMenu(tray_menu)
-        
+
         self.app_icon = QIcon()
-        
+
         THIS_DIR, THIS_FILENAME = os.path.split(__file__)
-        #self.app_icon = self.tintedIcon(QIcon(os.path.join(THIS_DIR, "icon.png")))
+        # self.app_icon = self.tintedIcon(QIcon(os.path.join(THIS_DIR, "icon.png")))
         self.app_icon = QIcon(tintedPixmap(os.path.join(THIS_DIR, "icon.png"), self.palette()))
 
         self.tray_icon.setIcon(self.app_icon)
         self.tray_icon.show()
 
         self.list_devices(self.onlyconnected)
-        self.update()
+        self.update_battery()
 
         self.bus.con.signal_subscribe(
-                "org.bluez",
-                "org.freedesktop.DBus.Properties",
-                "PropertiesChanged",
-                None,
-                None,
-                0,
-                self.btpc
+            "org.bluez",
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            None,
+            None,
+            0,
+            self.btpc
         )
 
         # self.hello
@@ -228,7 +247,7 @@ class MainWindow(QMainWindow):
         timer = QTimer(self)
         timer.start(60000)
         timer.timeout.connect(self.list_devices, self.onlyconnected)
-        timer.timeout.connect(self.update)
+        timer.timeout.connect(self.update_battery)
 
     # very general, in our case we'd just load thr png and tint ....
     def tintedIcon(self, icon):
@@ -265,9 +284,14 @@ class MainWindow(QMainWindow):
             self.floatwin.activateWindow()
         else:
             self.floatwin.hide()
-    
+
     def hello(self):
-        self.tray_icon.showMessage('Hello', 'There are currently %s bluetooth devices connected' % len(self.devs), QSystemTrayIcon.Information, 5000)
+        self.tray_icon.showMessage(
+            'Hello',
+            'There are currently %s bluetooth devices connected' % len(self.devs),
+            QSystemTrayIcon.Information,
+            5000
+        )
 
     def add_dev(self, addr):
         mngd_objs = self.mngr.GetManagedObjects()
@@ -286,6 +310,9 @@ class MainWindow(QMainWindow):
                     'class': meta.get('Class'),
                     'icon': meta.get('Icon', 'network-wireless')
                 }
+
+                self.update_battery(addr)
+
                 break
 
         self.floatwin.update_list(self.devs)
@@ -298,26 +325,84 @@ class MainWindow(QMainWindow):
 
     def list_devices(self, connected=True):
         _dvs = {}
-        
+
         mngd_objs = self.mngr.GetManagedObjects()
         for path in mngd_objs:
             meta = mngd_objs[path].get('org.bluez.Device1', {})
+
+
             con_state = meta.get('Connected', False)
             if not con_state and connected:
                 continue
             addr = meta.get('Address')
             name = meta.get('Name')
+
+            print(meta)
+            print()
+
             if not addr:
                 continue
-            _dvs[addr] = {'name':name, 'address': addr, 'online': con_state, 'class':meta.get('Class'), 'icon': meta.get('Icon', 'network-wireless')}
-                
+            _dvs[addr] = {'name': name, 'address': addr, 'online': con_state, 'class': meta.get('Class'),
+                          'icon': meta.get('Icon', 'network-wireless')}
+
         self.devs = _dvs
-
-    def update(self):
-        for addr, meta in self.devs.items():
-            self.devs[addr]['battery'] = BatteryStateQuerier(addr) if meta.get('online',False) else None
-
         self.floatwin.update_list(self.devs)
+
+    def update_battery(self, addr=None):
+        chks = CheckBat(self, addr)
+        chks.signals.finished.connect(lambda *x: self.floatwin.update_list(self.devs))
+        self.pool.start(chks)
+
+
+class CheckBat(QRunnable):
+    def __init__(self, inst, addr=None):
+        super(CheckBat, self).__init__()
+        self.inst = inst
+        self.addr = addr
+        self.signals = UpdateSignal()
+
+    def run(self):
+
+        print("start query battery for %s" % ('ALL' if not self.addr else self.addr))
+
+        if not self.addr:
+            for addr, meta in self.inst.devs.items():
+                if addr not in self.inst.devs:
+                    continue
+                try:
+                    self.inst.devs[addr]['battery'] = battery(addr) if meta.get('online', False) else None
+                except Exception as e:
+                    print_exc()
+                    self.inst.devs[addr]['battery'] = None
+                    self.inst.devs[addr]['error'] = str(e)
+        elif self.addr and self.addr in self.inst.devs:
+            try:
+                self.inst.devs[self.addr]['battery'] = battery(self.addr)
+            except Exception as e:
+                print_exc()
+                self.inst.devs[self.addr]['battery'] = None
+                self.inst.devs[self.addr]['error'] = str(e)
+
+        # self.inst.floatwin.update_list(self.inst.devs)
+        self.signals.finished.emit()
+
+
+def battery(addr):
+    retry = 0
+
+    print("resolve battery for ", addr)
+
+    q = BatteryStateQuerier(addr)
+
+    while retry < 5:
+        try:
+            return int(q)
+        except Exception as e:
+            print_exc()
+            time.sleep(2.5)
+            retry += 1
+            print("%s retry " % str(e), retry)
+            continue
 
 
 if __name__ == "__main__":
@@ -325,4 +410,3 @@ if __name__ == "__main__":
     app.setApplicationName('batterang')
     mw = MainWindow()
     sys.exit(app.exec())
-

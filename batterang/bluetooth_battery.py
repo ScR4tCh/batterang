@@ -9,8 +9,13 @@ A python library to get battery level from Bluetooth headsets
 # 29 Sept 2019
 
 import argparse
+import enum
+import socket
+
 import bluetooth
 from typing import Optional, Union, List, Dict
+
+from bluetooth import Protocols
 
 
 class BatteryQueryError(bluetooth.BluetoothError):
@@ -34,16 +39,17 @@ class SocketDataIterator:
         return self._sock.recv(self._chunk_size)
 
 
-class RFCOMMSocket(bluetooth.BluetoothSocket):
+class RFCOMMSocket():
 
     def __init__(self, _sock=None):
         super(RFCOMMSocket, self).__init__()
+        self.sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
 
     def __iter__(self):
         """
         Iterate over incoming chunks of 128 Bytes
         """
-        return SocketDataIterator(self)
+        return SocketDataIterator(self.sock, 256)
 
     @staticmethod
     def find_rfcomm_port(device_mac) -> int:
@@ -53,9 +59,13 @@ class RFCOMMSocket(bluetooth.BluetoothSocket):
         uuid = "0000111e-0000-1000-8000-00805f9b34fb"
         services: List[Dict] = bluetooth.find_service(address=device_mac, uuid=uuid)
 
+        print(services)
+
         for service in services:
             if "protocol" in service.keys() and service["protocol"] == "RFCOMM":
                 return service["port"]
+
+
         # Raise Interface error when the required service is not offered my the end device
         raise bluetooth.BluetoothError("Couldn't find the RFCOMM port number. Perhaps the device is offline?")
 
@@ -63,7 +73,13 @@ class RFCOMMSocket(bluetooth.BluetoothSocket):
         """
         This function sends a message through a bluetooth socket with added line separators
         """
-        return super().send(b"\r\n" + data + b"\r\n")
+        return self.sock.send(b"\r\n" + data + b"\r\n")
+
+    def connect(self, addr):
+        self.sock.connect(addr)
+
+    def close(self):
+        self.sock.close()
 
 
 class BatteryStateQuerier:
@@ -80,7 +96,8 @@ class BatteryStateQuerier:
         """
         #print(RFCOMMSocket.find_rfcomm_port(bluetooth_mac))
 
-        self._bt_settings = bluetooth_mac, int(bluetooth_port or RFCOMMSocket.find_rfcomm_port(bluetooth_mac))
+        self._bt_settings = (bluetooth_mac, RFCOMMSocket.find_rfcomm_port(bluetooth_mac))
+        print(self._bt_settings)
 
     def __int__(self):
         """
@@ -106,6 +123,7 @@ class BatteryStateQuerier:
             if b"BRSF" in line:
                 sock.send(b"+BRSF: 1024")
                 sock.send(b"OK")
+                pass
             elif b"CIND=" in line:
                 sock.send(b"+CIND:(\"service\",(0-1)),(\"call\",(0-1)),(\"callsetup\",(0-3)),(\"callheld\",(0-2)),(\"battchg\",(0-5))")
                 sock.send(b"OK")
@@ -163,6 +181,7 @@ def main():
     for device in args.devices:
         query = BatteryStateQuerier(*device.split("."))
         print("Battery level for {} is {}".format(device, str(query)))
+
 
 if __name__ == "__main__":
     main()
