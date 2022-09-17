@@ -131,7 +131,8 @@ def listitemgen(dv):
 
 def tintedPixmap(file, palette=None, color=None):
     ret = QPixmap(file)
-    color = QColor(palette.color(QPalette.Foreground)) if palette else (color if color else QColor(255, 255, 255))
+    if not color:
+        color = QColor(palette.color(QPalette.Foreground)) if palette else (color if color else QColor(255, 255, 255))
     painter = QPainter(ret)
     painter.setCompositionMode(painter.CompositionMode_SourceIn)
     painter.fillRect(ret.rect(), color)
@@ -221,7 +222,7 @@ class MainWindow(QMainWindow):
         QMainWindow.__init__(self)
 
 
-        print("Desktop", os.getenv("XDG_CURRENT_DESKTOP"))
+        desk = os.getenv("XDG_CURRENT_DESKTOP")
 
 
         try:
@@ -257,7 +258,7 @@ class MainWindow(QMainWindow):
 
         THIS_DIR, THIS_FILENAME = os.path.split(__file__)
         # self.app_icon = self.tintedIcon(QIcon(os.path.join(THIS_DIR, "icon.png")))
-        self.app_icon = QIcon(tintedPixmap(os.path.join(THIS_DIR, "icon.png"), self.palette()))
+        self.app_icon = QIcon(tintedPixmap(os.path.join(THIS_DIR, "icon.png"), self.palette(), self.palette().color(QPalette.HighlightedText)))
 
         self.tray_icon.setIcon(self.app_icon)
         self.tray_icon.show()
