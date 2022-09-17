@@ -1,16 +1,35 @@
+#!/usr/bin/env python3
+"""
+batterang
+"""
+
+from xml.etree import ElementTree
+
 import os
 import sys
 import time
 from traceback import print_exc
 
+# linux only !
 import pydbus
-from PyQt5.QtCore import Qt, QTimer, QSize, QRectF, QThread, QRunnable, QThreadPool, QObject
+
+from PyQt5.QtCore import Qt, QTimer, QSize, QRectF, QRunnable, QThreadPool, QObject
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtGui import QColor, QPalette, QCursor, QIcon, QRegion, QPainterPath, QPainter, QPixmap
 from PyQt5.QtWidgets import QWidget, QProgressBar, QFrame, QLabel, QListWidget, QListWidgetItem, QDesktopWidget, \
     QHBoxLayout, QVBoxLayout, QApplication, QSystemTrayIcon, QMenu, QMainWindow, QAction, qApp
 
 from bluetooth_battery import BatteryStateQuerier
+
+
+def dbus_list_bluez_adapters(bus):
+    res = []
+    db = bus.get('org.bluez')
+    for child in ElementTree.fromstring(db.Introspect()):
+        if child.tag == 'node':
+            res.append('/org/bluez/%s' % child.attrib['name'])
+
+    return res
 
 
 def progressStyle(val):
@@ -191,18 +210,23 @@ class FloatWin(QWidget):
 class UpdateSignal(QObject):
     finished = pyqtSignal()
 
+
 class MainWindow(QMainWindow):
     devs = {}
     bat = {}
 
     bus = pydbus.SystemBus()
 
-    # TODO: might be more than just one adapter !
-    adapter = bus.get('org.bluez', '/org/bluez/hci0')
-    mngr = bus.get('org.bluez', '/')
-
     def __init__(self):
         QMainWindow.__init__(self)
+
+        try:
+            # TODO: might be more than just one adapter !
+            self.adapter = self.bus.get('org.bluez', '/org/bluez/hci0')
+            self.mngr = self.bus.get('org.bluez', '/')
+        except:
+            self.adapter = None
+            self.bus = None
 
         self.pool = QThreadPool()
 
@@ -229,24 +253,25 @@ class MainWindow(QMainWindow):
         self.tray_icon.setIcon(self.app_icon)
         self.tray_icon.show()
 
-        self.list_devices(self.onlyconnected)
+        self.list_devices()
         self.update_battery()
 
-        self.bus.con.signal_subscribe(
-            "org.bluez",
-            "org.freedesktop.DBus.Properties",
-            "PropertiesChanged",
-            None,
-            None,
-            0,
-            self.btpc
-        )
+        if self.bus:
+            self.bus.con.signal_subscribe(
+                "org.bluez",
+                "org.freedesktop.DBus.Properties",
+                "PropertiesChanged",
+                None,
+                None,
+                0,
+                self.btpc
+            )
 
         # self.hello
 
         timer = QTimer(self)
         timer.start(60000)
-        timer.timeout.connect(self.list_devices, self.onlyconnected)
+        timer.timeout.connect(self.list_devices)
         timer.timeout.connect(self.update_battery)
 
     # very general, in our case we'd just load thr png and tint ....
@@ -280,7 +305,8 @@ class MainWindow(QMainWindow):
             self.floatwin.loc(self.tray_icon.geometry())
             self.floatwin.show()
             self.floatwin.setFocusPolicy(Qt.StrongFocus)
-            self.floatwin.setFocus(True)
+            #self.floatwin.setFocus(True)
+            self.floatwin.setFocus()
             self.floatwin.activateWindow()
         else:
             self.floatwin.hide()
@@ -323,30 +349,33 @@ class MainWindow(QMainWindow):
 
         self.floatwin.update_list(self.devs)
 
-    def list_devices(self, connected=True):
+    def list_devices(self):
         _dvs = {}
+        if self.mngr:
+            mngd_objs = self.mngr.GetManagedObjects()
+            for path in mngd_objs:
+                meta = mngd_objs[path].get('org.bluez.Device1', {})
 
-        mngd_objs = self.mngr.GetManagedObjects()
-        for path in mngd_objs:
-            meta = mngd_objs[path].get('org.bluez.Device1', {})
 
+                con_state = meta.get('Connected', False)
+                if not con_state and self.onlyconnected:
+                    continue
+                addr = meta.get('Address')
+                name = meta.get('Name')
 
-            con_state = meta.get('Connected', False)
-            if not con_state and connected:
-                continue
-            addr = meta.get('Address')
-            name = meta.get('Name')
+                print(meta)
+                print()
 
-            print(meta)
-            print()
+                if not addr:
+                    continue
+                _dvs[addr] = {'name': name, 'address': addr, 'online': con_state, 'class': meta.get('Class'),
+                              'icon': meta.get('Icon', 'network-wireless')}
 
-            if not addr:
-                continue
-            _dvs[addr] = {'name': name, 'address': addr, 'online': con_state, 'class': meta.get('Class'),
-                          'icon': meta.get('Icon', 'network-wireless')}
-
-        self.devs = _dvs
-        self.floatwin.update_list(self.devs)
+            self.devs = _dvs
+            self.floatwin.update_list(self.devs)
+        else:
+            # TODO: inform about bus / bt dev absence
+            pass
 
     def update_battery(self, addr=None):
         chks = CheckBat(self, addr)
@@ -398,7 +427,7 @@ def battery(addr):
         try:
             return int(q)
         except Exception as e:
-            print_exc()
+            # print_exc()
             time.sleep(2.5)
             retry += 1
             print("%s retry " % str(e), retry)
