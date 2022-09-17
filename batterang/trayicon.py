@@ -220,11 +220,16 @@ class MainWindow(QMainWindow):
     def __init__(self):
         QMainWindow.__init__(self)
 
+
+        print("Desktop", os.getenv("XDG_CURRENT_DESKTOP"))
+
+
         try:
             # TODO: might be more than just one adapter !
             self.adapter = self.bus.get('org.bluez', '/org/bluez/hci0')
             self.mngr = self.bus.get('org.bluez', '/')
         except:
+            self.mngr = None
             self.adapter = None
             self.bus = None
 
@@ -240,7 +245,11 @@ class MainWindow(QMainWindow):
         quit_action = QAction("exit", self)
         quit_action.triggered.connect(qApp.quit)
 
+        show_action = QAction("show", self)
+        show_action.triggered.connect(self.showWid)
+
         tray_menu = QMenu()
+        tray_menu.addAction(show_action)
         tray_menu.addAction(quit_action)
         self.tray_icon.setContextMenu(tray_menu)
 
